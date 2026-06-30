@@ -612,9 +612,9 @@ const MAXP=200, MAXT=64;
 const keys={};
 addEventListener('keydown',e=>{const k=e.key.toLowerCase();keys[k]=true;if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k))e.preventDefault();});
 addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
-const pointer={active:false,x:0,y:0,ox:0,oy:0};
+const pointer={active:false,touch:false,x:0,y:0,ox:0,oy:0};
 function setPtr(e){const t=e.touches?e.touches[0]:e;pointer.x=t.clientX;pointer.y=t.clientY;}
-cv.addEventListener('pointerdown',e=>{audioInit();setPtr(e);pointer.ox=pointer.x;pointer.oy=pointer.y;pointer.active=true;});
+cv.addEventListener('pointerdown',e=>{audioInit();setPtr(e);pointer.ox=pointer.x;pointer.oy=pointer.y;pointer.active=true;pointer.touch=(e.pointerType==='touch');});
 cv.addEventListener('pointermove',e=>{if(pointer.active)setPtr(e);});
 addEventListener('pointerup',()=>{pointer.active=false;});
 cv.addEventListener('touchstart',e=>{e.preventDefault();},{passive:false});
@@ -1349,6 +1349,14 @@ function render(){
   if(tipLife>0){const a=clamp(tipLife,0,1),fs=Math.round(Math.max(14,Math.min(22,W*0.022)));
     ctx.globalCompositeOperation='source-over';ctx.textAlign='center';
     ctx.font='700 '+fs+'px "Chakra Petch",sans-serif';ctx.fillStyle='rgba(56,249,255,'+(a*0.95)+')';ctx.fillText(t('tip'),W/2,H*0.17);}
+  // floating virtual joystick (touch only) — gives drag-to-move visual feedback
+  if(state==='playing'&&pointer.active&&pointer.touch){
+    const ox=pointer.ox,oy=pointer.oy,R=46; let dx=pointer.x-ox,dy=pointer.y-oy,d=Math.hypot(dx,dy);
+    if(d>R){dx=dx/d*R;dy=dy/d*R;}
+    ctx.globalCompositeOperation='source-over';
+    ctx.strokeStyle='rgba(56,249,255,0.30)';ctx.lineWidth=3;ctx.beginPath();ctx.arc(ox,oy,R,0,TAU);ctx.stroke();
+    ctx.fillStyle='rgba(56,249,255,0.5)';ctx.beginPath();ctx.arc(ox+dx,oy+dy,16,0,TAU);ctx.fill();
+  }
 }
 
 // ============================================================
