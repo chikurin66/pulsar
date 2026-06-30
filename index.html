@@ -138,7 +138,7 @@
   .card.evo{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold),0 0 44px rgba(255,210,74,.45);background:rgba(42,32,8,.72)}
   .card.evo .meta{color:var(--gold)}
   .card.evo .tier{color:var(--gold)}
-  .langToggle{position:absolute;top:14px;right:14px;display:flex;gap:4px;z-index:2}
+  .langToggle{position:absolute;top:14px;left:14px;display:flex;gap:4px;z-index:2}
   .lt{font-family:"Chakra Petch";font-weight:700;font-size:11px;letter-spacing:.04em;padding:5px 9px;border-radius:8px;cursor:pointer;
     background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);color:var(--dim);transition:all .12s}
   .lt.active{background:rgba(56,249,255,.14);border-color:var(--cyan);color:var(--ink)}
@@ -175,6 +175,7 @@
   .coresEarned b{color:var(--gold);font-family:"Orbitron";font-size:18px;letter-spacing:0;text-shadow:0 0 14px rgba(255,210,74,.5)}
   .x2{font-family:"Orbitron";font-weight:700;font-size:11px;letter-spacing:.04em;padding:6px 12px;border-radius:9px;cursor:pointer;
     background:linear-gradient(180deg,#ffe680,var(--gold));border:none;color:#2a1c00;text-transform:none}
+  @media (pointer:coarse){ .lt,.mt,.btn3,.x2,.sbuy{min-height:44px} .lt,.x2{padding-top:11px;padding-bottom:11px} }
 </style>
 </head>
 <body>
@@ -311,6 +312,7 @@ const I18N={
     saveImage:'Save image', retry:'↻ Retry', startDaily:'▶ Start Daily',
     startEndless:'▶ Start Endless', newBest:'★ New Best ★', noScores:'No scores yet',
     hint:'Move: WASD / arrows / drag · Attacks are automatic',
+    tip:'DRAG / WASD to move — weapons fire automatically',
     reviveBtn:'⛑ Revive · watch ad', revived:'REVIVED',
     coresLbl:'CORES', upgrades:'⬡ Upgrades', shopTitle:'AUGMENTS', maxed:'MAX', back:'Back',
     coresEarned:'Cores earned', doubleBtn:'×2 · ad', shopHint:'Permanent boosts. Spend Cores earned from every run.',
@@ -344,6 +346,7 @@ const I18N={
     saveImage:'画像を保存', retry:'↻ もう一度', startDaily:'▶ デイリー開始',
     startEndless:'▶ エンドレス開始', newBest:'★ 自己ベスト更新 ★', noScores:'スコアなし',
     hint:'移動: WASD / 矢印 / ドラッグ ・ 攻撃は自動',
+    tip:'ドラッグ / WASD で移動 — 攻撃は自動です',
     reviveBtn:'⛑ 復活（広告を見る）', revived:'復活！',
     coresLbl:'コア', upgrades:'⬡ 強化', shopTitle:'オーグメント', maxed:'最大', back:'戻る',
     coresEarned:'獲得コア', doubleBtn:'×2 · 広告', shopHint:'恒久強化。各ランで得たコアで購入。',
@@ -412,6 +415,8 @@ const DB={
   setShared(k,v){return STORE.set(k,v);}
 };
 let handle='YOU',streakCount=0,shareText='',lastScore=0,menuMode='daily';
+// Where shares point. Update per build (e.g. the CrazyGames game page) before launch.
+const GAME_URL='https://chikurin66.github.io/pulsar/';
 function esc(s){return String(s).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])).slice(0,12);}
 
 // ============================================================
@@ -478,13 +483,14 @@ function hitSfx(){ if(hitSfxAcc<=0){ noise(0.05,0.05,1200); hitSfxAcc=0.03; } }
 //  the CrazyGames build injects the SDK tag, so window.CrazyGames
 //  exists only there. Every call is guarded → safe no-op standalone.
 // ============================================================
-const CG=(window.CrazyGames&&window.CrazyGames.SDK)?window.CrazyGames.SDK:null;
+let CG=null;   // resolved lazily in init/loadingStart → robust to SDK <script> ordering
 let adShowing=false;
+function resolveCG(){ CG=(window.CrazyGames&&window.CrazyGames.SDK)||CG||null; return CG; }
 function audioDuck(on){ adShowing=on; if(Audio_.master) Audio_.master.gain.value=(on||Audio_.muted)?0:0.5; }
 const Platform={
   ready:false,
   async init(){
-    if(!CG) return;
+    resolveCG(); if(!CG) return;
     try{
       await CG.init(); this.ready=true;
       // Route saves through CG cloud data (auto cross-device sync when logged in).
@@ -492,19 +498,26 @@ const Platform={
               async set(k,v){ try{CG.data.setItem(k,String(v));}catch(e){} } };
     }catch(e){ this.ready=false; }
   },
-  loadingStart(){ if(CG)try{CG.game.loadingStart();}catch(e){} },
+  loadingStart(){ resolveCG(); if(CG)try{CG.game.loadingStart();}catch(e){} },
   loadingStop(){ if(CG)try{CG.game.loadingStop();}catch(e){} },
   gameplayStart(){ if(CG)try{CG.game.gameplayStart();}catch(e){} },
   gameplayStop(){ if(CG)try{CG.game.gameplayStop();}catch(e){} },
   happytime(){ if(CG)try{CG.game.happytime();}catch(e){} },
   hasAds(){ return !!CG; },
   // Interstitial at natural breaks (between runs). SDK auto-throttles (max 1/3min).
-  midgame(){ if(!CG) return; try{ CG.ad.requestAd('midgame',{adStarted:()=>audioDuck(true),adFinished:()=>audioDuck(false),adError:()=>audioDuck(false)}); }catch(e){ audioDuck(false); } },
+  // onDone runs after the ad closes (or immediately when no ad/CG) so callers can
+  // start the next run AFTER the interstitial. 8s timeout guards a stuck ad.
+  midgame(onDone){ const done=()=>{ if(onDone)onDone(); };
+    if(!CG){ done(); return; }
+    let fired=false; const fin=()=>{ if(fired)return; fired=true; audioDuck(false); done(); };
+    try{ audioDuck(true); CG.ad.requestAd('midgame',{adStarted:()=>audioDuck(true),adFinished:fin,adError:fin}); setTimeout(fin,8000); }
+    catch(e){ fin(); } },
   // Rewarded → resolves true if the reward should be granted. Per CG guidance,
   // grant on adError too (don't punish players when fill fails). Standalone → false.
+  // 30s timeout grants the reward & restores audio even if no callback ever fires.
   rewarded(){ return new Promise(resolve=>{ if(!CG){ resolve(false); return; }
     let done=false; const fin=g=>{ if(done)return; done=true; audioDuck(false); resolve(g); };
-    try{ audioDuck(true); CG.ad.requestAd('rewarded',{adStarted:()=>{},adFinished:()=>fin(true),adError:()=>fin(true)}); }
+    try{ audioDuck(true); CG.ad.requestAd('rewarded',{adStarted:()=>audioDuck(true),adFinished:()=>fin(true),adError:()=>fin(true)}); setTimeout(()=>fin(true),30000); }
     catch(e){ fin(false); } }); }
 };
 
@@ -516,19 +529,19 @@ let cores=0;
 const meta={power:0,vigor:0,swift:0,fortune:0,greed:0};
 let runEarned=0, doubled=false;
 const SHOP=[
-  {id:'power',  ic:'▲', col:'#ff5765', max:5, base:50, eff:l=>'+'+(5*l)+'%'},
-  {id:'vigor',  ic:'✚', col:'#ff9a6a', max:5, base:50, eff:l=>'+'+(15*l)},
+  {id:'power',  ic:'▲', col:'#ff5765', max:5, base:50, eff:l=>'+'+(7*l)+'%'},
+  {id:'vigor',  ic:'✚', col:'#ff9a6a', max:5, base:50, eff:l=>'+'+(12*l)},
   {id:'swift',  ic:'➤', col:'#8affc1', max:5, base:60, eff:l=>'+'+(4*l)+'%'},
-  {id:'fortune',ic:'✸', col:'#ffe680', max:5, base:70, eff:l=>'+'+(2*l)+'%'},
+  {id:'fortune',ic:'✸', col:'#ffe680', max:5, base:60, eff:l=>'+'+(3*l)+'%'},
   {id:'greed',  ic:'◆', col:'#c9a9ff', max:5, base:80, eff:l=>'+'+(10*l)+'%'}
 ];
 function shopCost(s,l){ return Math.round(s.base*Math.pow(1.7,l)); }
 function saveMeta(){ DB.set('pulsar:cores',cores); DB.set('pulsar:meta',JSON.stringify(meta)); }
 function applyMeta(){
-  player.stats.dmgMult*=1+0.05*meta.power;
-  player.maxHp+=15*meta.vigor; player.hp=player.maxHp;
+  player.stats.dmgMult*=1+0.07*meta.power;
+  player.maxHp+=12*meta.vigor; player.hp=player.maxHp;
   player.stats.moveMult*=1+0.04*meta.swift;
-  player.stats.crit+=0.02*meta.fortune;
+  player.stats.crit+=0.03*meta.fortune;
 }
 function coresFromRun(score){ return Math.max(0,Math.floor((score/40+kills*0.5)*(1+0.10*meta.greed))); }
 function updateMenuCores(){ if(ui.menuCores) ui.menuCores.textContent=cores.toLocaleString(); }
@@ -573,10 +586,13 @@ const cam={x:0,y:0,shake:0};
 let freeze=0;
 const player={x:0,y:0,vx:0,vy:0,r:13,hp:100,maxHp:100,invuln:0,aim:0,regenAcc:0,trail:[],
   level:1,xp:0,xpNext:5,weapons:{pulse:1,orbiters:0,nova:0,blade:0,arc:0,lance:0},cool:{pulse:0,nova:0,blade:0,arc:0,lance:0},evo:{},
-  stats:{dmgMult:1,fireMult:1,moveMult:1,magnet:80,regen:0,crit:0.04,critMult:2}};
+  stats:{dmgMult:1,fireMult:1,moveMult:1,magnet:120,regen:0,crit:0.04,critMult:2}};
 const enemies=[],bullets=[],orbs=[],parts=[],texts=[],slashes=[],bolts=[],beams=[];
 let orbiterAng=0,spawnAcc=0,bossTimer=60,bulletUID=1,arcId=1,wScan=1;
 let revived=false;   // rewarded-ad revive used this run?
+let ready=false;     // async init() done? (gates Start so meta/handle are loaded first)
+let sessionRuns=0;   // runs this session (gates the first interstitials for new players)
+let tipLife=0;       // first-ever-run control hint timer
 
 // ---------- pools (zero per-frame allocation) ----------
 const bulletPool=[],partPool=[],orbPool=[],textPool=[],trailPool=[],cellPool=[];
@@ -642,10 +658,12 @@ function dmgScale(){return 0.7+0.3*diffScale();}                        // 1.0 a
 function spdScale(){return 1+Math.min(0.55,elapsed/650);}               // enemies get faster
 function eliteChance(){return Math.min(0.22,elapsed/1400);}             // up to 22% elites
 function bossInterval(){return Math.max(34,60-elapsed/24);}             // bosses come more often
-function spawnRate(){return Math.min(12,1.0+elapsed*0.075);}
+function spawnRate(){return Math.min(12,2.2+elapsed*0.075);}
 function spawnEnemy(type,x,y,scale){
   const t=ETYPES[type],d=diffScale(); let px=x,py=y;
-  if(px===undefined){const ang=srand(0,TAU),dr=len(W,H)*0.62;px=player.x+Math.cos(ang)*dr;py=player.y+Math.sin(ang)*dr;}
+  if(px===undefined){const ang=srand(0,TAU),c=Math.cos(ang),s2=Math.sin(ang),hw=W/2+70,hh=H/2+70,
+    dr=Math.min(hw/Math.max(0.001,Math.abs(c)),hh/Math.max(0.001,Math.abs(s2)));
+    px=player.x+c*dr;py=player.y+s2*dr;}
   const s=scale||1;
   enemies.push({type,x:px,y:py,vx:0,vy:0,r:t.r*s,maxHp:t.hp*d*s,hp:t.hp*d*s,spd:t.spd*rand(.9,1.1)*spdScale(),
     dmg:t.dmg*dmgScale()*(0.7+0.3*s),xp:Math.ceil(t.xp*s),col:t.col,shape:t.shape,split:t.split,flash:0,kb_x:0,kb_y:0,
@@ -702,6 +720,7 @@ function burst(x,y,col,n){
   }
 }
 function damageEnemy(e,dmg,fromBullet){
+  if(e.dead) return;   // guard: instant-hit weapons can re-hit a corpse in the same frame
   e.hp-=dmg; e.flash=0.09;
   if(fromBullet) hitSfx();
   const crit = dmg>=18&&fromBullet;
@@ -766,7 +785,7 @@ function nearestEnemy(){
 function pulseStats(){
   const L=player.weapons.pulse,s=player.stats;
   if(player.evo.pulse) return {dmg:(7+L*3)*1.5*s.dmgMult,interval:Math.max(0.07,(0.5-L*0.022)*0.6)/s.fireMult,count:Math.max(6,2+Math.floor(L/2)),pierce:99,spd:660,critF:0.6};
-  return {dmg:(7+L*3)*s.dmgMult,interval:Math.max(0.11,(0.5-L*0.022))/s.fireMult,count:1+Math.floor(L/3),pierce:Math.floor(L/5),spd:560,critF:0};
+  return {dmg:(8+L*3)*s.dmgMult,interval:Math.max(0.11,(0.5-L*0.022))/s.fireMult,count:1+Math.floor(L/2),pierce:Math.floor(L/3),spd:560,critF:0};
 }
 function firePulse(){
   const target=nearestEnemy(); if(!target) return;
@@ -779,7 +798,7 @@ function firePulse(){
     const b=getBullet();
     b.x=player.x+Math.cos(a)*16; b.y=player.y+Math.sin(a)*16; b.px=b.x; b.py=b.y;
     b.vx=Math.cos(a)*ps.spd; b.vy=Math.sin(a)*ps.spd; b.r=4;
-    b.dmg=ps.dmg*(crit?player.stats.critMult:1); b.crit=crit; b.pierce=ps.pierce; b.life=1.4; b.uid=bulletUID++;
+    b.dmg=ps.dmg*(crit?player.stats.critMult:1); b.crit=crit; b.pierce=ps.pierce; b.life=1.7; b.uid=bulletUID++;
     bullets.push(b);
   }
   SFX.shoot();
@@ -965,10 +984,13 @@ function reset(){
   player.weapons={pulse:1,orbiters:0,nova:0,blade:0,arc:0,lance:0};
   player.cool={pulse:0,nova:0,blade:0,arc:0,lance:0};
   player.evo={}; evoBanner={name:'',life:0};
-  player.stats={dmgMult:1,fireMult:1,moveMult:1,magnet:80,regen:0,crit:0.04,critMult:2};
+  player.stats={dmgMult:1,fireMult:1,moveMult:1,magnet:120,regen:0,crit:0.04,critMult:2};
   applyMeta();
 }
 function startGame(mode){
+  if(!ready) return;          // wait until meta/handle/best are loaded
+  sessionRuns++;
+  try{ if(!localStorage.getItem('pulsar:tip')){ tipLife=4.5; localStorage.setItem('pulsar:tip','1'); } }catch(e){}
   DAILY=(mode!=='endless');
   dayStr=todayStr();
   daySeed=DAILY?seedFromStr(dayStr):((Math.random()*4294967296)>>>0);
@@ -1043,7 +1065,7 @@ function renderBoard(arr,myScore){
   ui.lbList.innerHTML = arr.map((e,i)=>`<div class="lbrow${e.me?' me':''}"><span>#${i+1}</span><span class="n">${esc(e.n)}</span><span class="s">${e.s.toLocaleString()}</span></div>`).join('') || ('<div class="lbrow"><span class="n" style="color:var(--dim)">'+t('noScores')+'</span></div>');
 }
 function buildShare(score){
-  shareText='PULSAR  '+(DAILY?('Daily '+dayStr):'Endless')+'\n⏱ '+fmtTime(elapsed)+'   ☠ '+kills+'   ⭐ Lv'+player.level+'\nSCORE '+score.toLocaleString()+(DAILY&&streakCount>1?('   🔥'+streakCount+'d'):'')+'\n#PULSAR';
+  shareText='PULSAR  '+(DAILY?('Daily '+dayStr):'Endless')+'\n⏱ '+fmtTime(elapsed)+'   ☠ '+kills+'   ⭐ Lv'+player.level+'\nSCORE '+score.toLocaleString()+(DAILY&&streakCount>1?('   🔥'+streakCount+'d'):'')+'\n#PULSAR  '+GAME_URL;
 }
 function makeCard(score){
   const w=640,h=360,c=document.createElement('canvas');c.width=w;c.height=h;const g=c.getContext('2d');
@@ -1061,6 +1083,7 @@ function makeCard(score){
   g.fillText('TIME '+fmtTime(elapsed),36,300); g.fillText('KILLS '+kills,250,300); g.fillText('LV '+player.level,430,300);
   g.textAlign='right';g.fillStyle='#7d8bb0';g.font='600 16px "Chakra Petch", sans-serif';g.fillText('@'+handle,w-36,86);
   if(DAILY&&streakCount>1){g.fillStyle='#ff9a6a';g.font='700 14px "Chakra Petch", sans-serif';g.fillText(streakCount+' DAY STREAK',w-36,114);}
+  g.textAlign='left';g.fillStyle='#5e6f9a';g.font='600 14px "Chakra Petch", sans-serif';g.fillText(GAME_URL.replace(/^https?:\/\//,'').replace(/\/$/,''),36,h-22);
   return c.toDataURL('image/png');
 }
 function flashBtn(b,t){const o=b.textContent;b.textContent=t;setTimeout(()=>{b.textContent=o;},1200);}
@@ -1086,18 +1109,23 @@ async function init(){
     ui.lbMini.innerHTML=arr.slice(0,5).map((e,i)=>`<div class="lbrow${e.me?' me':''}"><span>#${i+1}</span><span class="n">${esc(e.n)}</span><span class="s">${e.s.toLocaleString()}</span></div>`).join('');
   }catch(e){ ui.lbMini.innerHTML=''; }
   setLang(LANG);
+  ready=true; ui.startBtn.disabled=false;
 }
 ui.mDaily.onclick=()=>setMenuMode('daily');
 ui.mEndless.onclick=()=>setMenuMode('endless');
 document.querySelectorAll('.lt').forEach(b=>b.onclick=()=>setLang(b.getAttribute('data-lang')));
 ui.startBtn.onclick=()=>startGame(menuMode);
-el('retryBtn').onclick=()=>{ Platform.midgame(); startGame(DAILY?'daily':'endless'); };
+el('retryBtn').onclick=()=>{ const go=()=>startGame(DAILY?'daily':'endless'); if(sessionRuns>=2) Platform.midgame(go); else go(); };
 ui.reviveBtn.onclick=async()=>{ if(revived) return; ui.reviveBtn.disabled=true; const ok=await Platform.rewarded(); ui.reviveBtn.disabled=false; if(ok) revive(); };
 ui.shopBtn.onclick=()=>openShop();
 ui.shopBack.onclick=()=>closeShop();
 ui.doubleBtn.onclick=async()=>{ if(doubled||runEarned<=0) return; ui.doubleBtn.disabled=true; const ok=await Platform.rewarded(); ui.doubleBtn.disabled=false; if(ok){ doubled=true; cores+=runEarned; saveMeta(); ui.goCores.textContent='+'+(runEarned*2).toLocaleString(); ui.doubleBtn.classList.add('hidden'); updateMenuCores(); } };
 ui.handleInput.oninput=()=>{handle=(ui.handleInput.value.trim()||'YOU').slice(0,12);DB.set('pulsar:handle',handle);};
-ui.shareBtn.onclick=async()=>{ try{ await navigator.clipboard.writeText(shareText); flashBtn(ui.shareBtn,t('copied')); }catch(e){ ui.shareBox.classList.remove('hidden'); ui.shareBox.value=shareText; ui.shareBox.focus(); ui.shareBox.select(); } };
+ui.shareBtn.onclick=async()=>{
+  if(navigator.share){ try{ await navigator.share({title:'PULSAR',text:shareText}); return; }catch(e){ if(e&&e.name==='AbortError') return; } }
+  try{ await navigator.clipboard.writeText(shareText); flashBtn(ui.shareBtn,t('copied')); }
+  catch(e){ ui.shareBox.classList.remove('hidden'); ui.shareBox.value=shareText; ui.shareBox.focus(); ui.shareBox.select(); }
+};
 ui.cardBtn.onclick=()=>{ try{ const url=makeCard(lastScore); const a=document.createElement('a'); a.href=url; a.download='pulsar_'+(DAILY?dayStr:'run')+'.png'; document.body.appendChild(a); a.click(); a.remove(); }catch(e){} };
 ui.mute.onclick=()=>{Audio_.muted=!Audio_.muted;if(Audio_.master)Audio_.master.gain.value=Audio_.muted?0:0.5;
   ui.mute.textContent=Audio_.muted?'✕':'♪';ui.mute.style.color=Audio_.muted?'#7d8bb0':'#eaf6ff';};
@@ -1107,6 +1135,7 @@ ui.mute.onclick=()=>{Audio_.muted=!Audio_.muted;if(Audio_.master)Audio_.master.g
 // ============================================================
 function update(dt){
   elapsed+=dt; if(hitSfxAcc>0)hitSfxAcc-=dt;
+  if(tipLife>0)tipLife-=dt;
 
   let mx=0,my=0;
   if(keys['w']||keys['arrowup'])my-=1;
@@ -1118,6 +1147,7 @@ function update(dt){
     if(d>12){mx+=dx/d;my+=dy/d;}
   }
   const ml=Math.sqrt(mx*mx+my*my); if(ml>0){mx/=ml;my/=ml;}
+  if(tipLife>1.4&&ml>0.1)tipLife=1.4;   // fade the hint once the player starts moving
   const spd=230*player.stats.moveMult;
   player.vx=lerp(player.vx,mx*spd,0.25); player.vy=lerp(player.vy,my*spd,0.25);
   player.x+=player.vx*dt; player.y+=player.vy*dt;
@@ -1215,8 +1245,9 @@ function render(){
   ctx.setTransform(DPR,0,0,DPR,0,0);
   ctx.fillStyle='#05060c'; ctx.fillRect(0,0,W,H);
 
-  const sx=cam.shake>0.2?rand(-cam.shake,cam.shake):0;
-  const sy=cam.shake>0.2?rand(-cam.shake,cam.shake):0;
+  const shk=RM?0:cam.shake;
+  const sx=shk>0.2?rand(-shk,shk):0;
+  const sy=shk>0.2?rand(-shk,shk):0;
   const ox=W/2-cam.x+sx, oy=H/2-cam.y+sy;
   // view bounds (world space) for culling
   const vL=cam.x-W/2-100, vR=cam.x+W/2+100, vT=cam.y-H/2-100, vB=cam.y+H/2+100;
@@ -1315,6 +1346,9 @@ function render(){
   if(evoBanner.life>0){const a=clamp(evoBanner.life/2.2,0,1);ctx.globalCompositeOperation='source-over';ctx.textAlign='center';
     ctx.font='900 30px "Orbitron",sans-serif';ctx.fillStyle='rgba(255,210,74,'+a+')';ctx.fillText('EVOLVED',W/2,H*0.30);
     ctx.font='700 18px "Chakra Petch",sans-serif';ctx.fillStyle='rgba(234,246,255,'+a+')';ctx.fillText(evoBanner.name,W/2,H*0.30+30);}
+  if(tipLife>0){const a=clamp(tipLife,0,1),fs=Math.round(Math.max(14,Math.min(22,W*0.022)));
+    ctx.globalCompositeOperation='source-over';ctx.textAlign='center';
+    ctx.font='700 '+fs+'px "Chakra Petch",sans-serif';ctx.fillStyle='rgba(56,249,255,'+(a*0.95)+')';ctx.fillText(t('tip'),W/2,H*0.17);}
 }
 
 // ============================================================
@@ -1340,7 +1374,7 @@ function frame(now){
     else if(freeze>0){freeze-=dt;}
     else{
       acc+=dt; let steps=0;
-      while(acc>=STEP&&steps<MAXSTEPS){update(STEP);acc-=STEP;steps++;}
+      while(state==='playing'&&acc>=STEP&&steps<MAXSTEPS){update(STEP);acc-=STEP;steps++;}
       if(steps===MAXSTEPS)acc=0;
     }
     render();
@@ -1351,6 +1385,7 @@ function frame(now){
 
 buildSheets();
 if(location.search.indexOf('perf')>=0) ui.perf.style.display='block';
+ui.startBtn.disabled=true;
 (async()=>{ Platform.loadingStart(); await Platform.init(); await init(); Platform.loadingStop(); })();
 requestAnimationFrame(frame);
 })();
